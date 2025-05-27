@@ -1,0 +1,72 @@
+name: Upload updated custom_code JS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "v3/**/index.js"
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install jq
+        run: sudo apt-get install jq
+
+      - name: Find changed index.js files
+        id: find_changed
+        run: |
+          dirs=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} \
+            | grep '^v3/.*/index.js$' \
+            | sed 's|/index.js||' \
+            | uniq)
+          echo "changed_dirs<<EOF" >> $GITHUB_OUTPUT
+          echo "$dirs" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Upload each changed index.js
+        if: steps.find_changed.outputs.changed_dirs != ''
+        run: |
+          echo "${{ steps.find_changed.outputs.changed_dirs }}" | while read dir; do
+            echo "Processing $dir..."
+
+            config_file="$dir/config.json"
+            js_file="$dir/index.js"
+
+            if [ ! -f "$config_file" ]; then
+              echo "Config file not found in $dir, skipping..."
+              continue
+            fi
+
+            # Extract config
+            region=$(jq -r '.region // empty' "$config_file")
+            api_key=$(jq -r '."x-api-key" // empty' "$config_file")
+            uid=$(jq -r '.custom_code_uid // empty' "$config_file")
+            is_v3=$(jq -r '.is_v3 // false' "$config_file")
+
+            if [ -z "$region" ] || [ -z "$api_key" ] || [ -z "$uid" ]; then
+              echo "Missing region, api_key, or uid in $config_file, skipping..."
+              continue
+            fi
+
+            js_content=$(jq -Rs . < "$js_file")
+            url="https://${region}.zuperpro.com/api/misc/custom_code/${uid}"
+
+            echo "Uploading $dir/index.js to $url"
+
+            curl --location --request PUT "$url" \
+              --header "x-api-key: $api_key" \
+              --header "Content-Type: application/json" \
+              --data "{
+                \"custom_code\": {
+                  \"is_v3\": $is_v3,
+                  \"custom_code_type\": \"JS\",
+                  \"custom_code\": $js_content
+                }
+              }"
+          done
